@@ -1,0 +1,70 @@
+name: Build Wasl APK (Flutter)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_name:
+        description: "رقم الإصدار (مثال 2.0.0)"
+        required: true
+        default: "2.0.0"
+      api_base_url:
+        description: "API base URL"
+        required: true
+        default: "https://wasl.example.ye/api"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "17" }
+      - uses: subosito/flutter-action@v2
+        with: { channel: stable, cache: true }
+
+      - name: Verify signing secrets (same four secrets as the old Capacitor workflow)
+        run: |
+          for s in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_PASSWORD ANDROID_KEY_ALIAS; do
+            [ -n "${!s}" ] || { echo "::error::secret $s missing"; exit 1; }
+          done
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+
+      - name: Write keystore and key.properties
+        run: |
+          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | tr -d ' \t\r\n' | base64 -d > android/app/wasl-release.keystore
+          cat > android/key.properties <<EOF2
+          storeFile=wasl-release.keystore
+          storePassword=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          keyPassword=${{ secrets.ANDROID_KEY_PASSWORD }}
+          keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}
+          EOF2
+
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test
+      - name: Build release APK
+        env:
+          GOOGLE_MAPS_ANDROID_KEY: ${{ secrets.GOOGLE_MAPS_ANDROID_KEY }}
+        run: |
+          flutter build apk --release \
+            --dart-define=API_BASE_URL=${{ github.event.inputs.api_base_url }} \
+            --dart-define=APP_ENV=production \
+            --build-name=${{ github.event.inputs.version_name }} --build-number=${{ github.run_number }}
+          cp build/app/outputs/flutter-apk/app-release.apk "Wasl-v${{ github.event.inputs.version_name }}.apk"
+      - uses: actions/upload-artifact@v4
+        with: { name: "Wasl-APK-v${{ github.event.inputs.version_name }}", path: "Wasl-v*.apk" }
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: apk-v${{ github.event.inputs.version_name }}-b${{ github.run_number }}
+          name: "وصل — Wasl APK v${{ github.event.inputs.version_name }} (build ${{ github.run_number }})"
+          body: |
+            نسخة أندرويد (Flutter) جاهزة للتثبيت فوق النسخة القديمة (نفس المعرّف ye.wasl.app ونفس مفتاح التوقيع).
+            الإصدار: ${{ github.event.inputs.version_name }} — رقم البناء: ${{ github.run_number }}
+          files: Wasl-v*.apk
